@@ -8,18 +8,14 @@ using System.Collections.ObjectModel;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
-using System.Windows.Forms;
 
 namespace RogArmouryKbRevengGUI_NETFW.KBImpls
 {
     class AsusClaymore : GenericHIDKeyboard, IArmouryProtocolKB, IAuraSyncProtocolKB
     {
-        protected override int DevicePID { get { return 6221; } }
-        protected override int DeviceVID { get { return 2821; } }
-        public string GetPrettyName()
-        {
-            return "Asus Claymore (Core?)";
-        }
+        protected override int DevicePID => 6221;
+        protected override int DeviceVID => 2821;
+        public string PrettyName => "Asus Claymore (Core?)";
 
         public void Connect()
         {
@@ -104,6 +100,18 @@ namespace RogArmouryKbRevengGUI_NETFW.KBImpls
             InternalSendWriteType44((byte)ByteSelectedEffectTypes.ColorCycle, 128, Color.Empty, Color.Empty, 121);
         }
 
+        public void SetEffect_Breathing(Color breathingColor1, Color breathingColor2, byte brightness, BreathingTypes breathingType, BreathingSpeeds speed)
+        {
+            if (breathingType != BreathingTypes.Single)
+            {
+                //Only single breathing mode is implemented in this keyboard
+                throw new ArgumentException();
+            }
+
+            //Both parameters are hardcoded here too
+            InternalSendWriteType44((byte)ByteSelectedEffectTypes.Breathing, byte.MaxValue, breathingColor1, Color.Empty, 107);
+        }
+
         private void InternalSendWriteType44(byte byteSelectedEffect, byte brightness, Color color1, Color color2, byte speed = 0, byte randColorBit = 0, byte bgSinkBit = 0,
             byte brightnessFadeBit = 0, byte byteDirection5Bits = 0, byte byteExt1 = 0xFF, byte byteExt2 = 0xFF)
         {
@@ -175,6 +183,7 @@ namespace RogArmouryKbRevengGUI_NETFW.KBImpls
             ExecuteMacroFlash,
             ExecuteProfileFlashCmd,
             GetKeyLogData,
+            AuraSyncProtocolUpdateCommand,
             InvalidResponse
         };
 
@@ -198,11 +207,63 @@ namespace RogArmouryKbRevengGUI_NETFW.KBImpls
             return Tuple.Create(23, 8);
         }
 
+        public Tuple<int, int> GetDirectColorCanvasIndexByAuraSDKKey(AsusAuraSDKKeys key)
+        {
+            switch (key)
+            {
+                case AsusAuraSDKKeys.UNOFFICIAL_ISO_BACKSLASH:
+                    return Tuple.Create(4, 1);
+                case AsusAuraSDKKeys.ROG_KEY_Z:
+                    return Tuple.Create(4, 2);
+                case AsusAuraSDKKeys.ROG_KEY_X:
+                    return Tuple.Create(4, 3);
+                case AsusAuraSDKKeys.ROG_KEY_C:
+                    return Tuple.Create(4, 4);
+                case AsusAuraSDKKeys.ROG_KEY_V:
+                    return Tuple.Create(4, 5);
+                case AsusAuraSDKKeys.ROG_KEY_B:
+                    return Tuple.Create(4, 6);
+                case AsusAuraSDKKeys.ROG_KEY_N:
+                    return Tuple.Create(4, 7);
+                case AsusAuraSDKKeys.ROG_KEY_M:
+                    return Tuple.Create(4, 8);
+                case AsusAuraSDKKeys.ROG_KEY_COMMA:
+                    return Tuple.Create(4, 9);
+                case AsusAuraSDKKeys.ROG_KEY_PERIOD:
+                    return Tuple.Create(4, 10);
+                case AsusAuraSDKKeys.ROG_KEY_SLASH:
+                    return Tuple.Create(4, 11);
+                case AsusAuraSDKKeys.UNOFFICIAL_ISO_HASH:
+                    return Tuple.Create(3, 12);
+                case AsusAuraSDKKeys.ROG_KEY_LOGO:
+                    return Tuple.Create(5, 8);
+                    /*case AsusAuraSDKKeys.ROG_KEY_NUMPAD5:
+                        return Tuple.Create(4, 19);
+                    case AsusAuraSDKKeys.ROG_KEY_NUMPAD6:
+                        return Tuple.Create(4, 21);*/
+            }
+
+            var rgbKey = AuraSyncProtocolKeyMappings.ClaymoreMapping.FirstOrDefault(x => x.KeyCode == (ushort)key);
+            if (rgbKey == null)
+            {
+                throw new ArgumentException();
+            }
+
+            var maxLen = GetDirectColorCanvasMaxLength();
+            if (rgbKey.X >= maxLen.Item2 || rgbKey.Y >= maxLen.Item1)
+            {
+                throw new ArgumentException();
+            }
+
+            return Tuple.Create((int)rgbKey.X, (int)rgbKey.Y);
+        }
+
         public void SetDirectColorCanvas(Color[,] arg1)
         {
             AuraSyncModeSwitch(true);
 
-            var colorArray = arg1.Cast<Color>().ToArray();
+            //Claymore's key matrix is [Rows, Columns] whereas a sane key matrix is [Columns, Rows]
+            var colorArray = arg1.TransposeMatrix().FlattenMatrix();
 
             int XMax = GetDirectColorCanvasMaxLength().Item1;
             int YMax = GetDirectColorCanvasMaxLength().Item2;
@@ -391,6 +452,10 @@ namespace RogArmouryKbRevengGUI_NETFW.KBImpls
                     //FN + Special key response
                 }
             }
+            else if (receiveBuffer[0] == 0xc0 && receiveBuffer[1] == 0x81)
+            {
+                return InterfaceZeroResponseTypes.AuraSyncProtocolUpdateCommand;
+            }
 
             return InterfaceZeroResponseTypes.InvalidResponse;
         }
@@ -432,10 +497,19 @@ namespace RogArmouryKbRevengGUI_NETFW.KBImpls
             }
         }
 
-        //Warning: This function may throw a TimeoutException
-        private void WaitForIface0Confirmation(InterfaceZeroResponseTypes responseType, TimeSpan? timeout = null)
+        private bool WaitForIface0Confirmation(InterfaceZeroResponseTypes responseType, TimeSpan? timeout = null)
         {
-            GetIface0Response(responseType, out _, timeout, false);
+            try
+            {
+                GetIface0Response(responseType, out _, timeout, false);
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                //Timeouts happen because the keyboard doesn't respond sometimes
+            }
+
+            return false;
         }
         #endregion
 
@@ -455,17 +529,7 @@ namespace RogArmouryKbRevengGUI_NETFW.KBImpls
             throw new NotImplementedException(); //TODO
         }
 
-        public void SetEffect_Breathing(Color breathingColor1, Color breathingColor2, byte brightness, BreathingTypes breathingType, BreathingSpeeds speed)
-        {
-            throw new NotImplementedException(); //TODO
-        }
-
         public Tuple<int, int> GetMultiStaticColorDataIndexByVKCode(int virtualKeyCode)
-        {
-            throw new NotImplementedException(); //TODO
-        }
-
-        public Tuple<int, int> GetDirectColorCanvasIndexByAuraSDKKey(AsusAuraSDKKeys key)
         {
             throw new NotImplementedException(); //TODO
         }
